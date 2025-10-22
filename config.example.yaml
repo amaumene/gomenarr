@@ -1,0 +1,103 @@
+# Gomenarr Configuration
+
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: 3000
+  read_timeout: 15s
+  write_timeout: 15s
+  idle_timeout: 60s
+
+# Data directory (where SQLite DB and files are stored)
+data:
+  dir: "./data"
+  blacklist_file: "./data/blacklist.txt"
+  token_file: "./data/token.json"
+
+# Database configuration (SQLite)
+database:
+  path: "./data/gomenarr.db"
+  max_open_conns: 25
+  max_idle_conns: 25
+  conn_max_lifetime: 5m
+  wal_mode: true
+
+# Cache configuration (in-memory)
+cache:
+  default_expiration: 1h
+  cleanup_interval: 10m
+
+# Logging configuration
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "json"  # json, console
+  output: "stdout"
+
+# Metrics configuration
+metrics:
+  enabled: true
+  namespace: "gomenarr"
+
+# Tracing configuration (OpenTelemetry)
+tracing:
+  enabled: false
+  endpoint: ""
+  service_name: "gomenarr"
+
+# Trakt.tv configuration
+trakt:
+  client_id: "your-trakt-client-id"
+  client_secret: "your-trakt-client-secret"
+  redirect_uri: "urn:ietf:wg:oauth:2.0:oob"
+  timeout: 30s
+  favorites_episode_limit: 3  # Number of next episodes to fetch for favorite shows
+
+# Newsnab configuration
+newsnab:
+  url: "https://your-indexer.com"
+  api_key: "your-api-key"
+  timeout: 30s
+  max_results: 0  # 0 = no limit (get all available results), or set a specific number to limit results
+
+# NZBGet configuration
+nzbget:
+  url: "http://localhost:6789"
+  username: "nzbget"
+  password: "your-password"
+  timeout: 30s
+  category: "trakt"
+  priority: 0
+
+# Download configuration
+download:
+  min_validation_score: 65
+  min_quality_score: 40
+  min_total_score: 105
+  cleanup_watched_days: 5
+  delete_files: true  # Delete files from disk during cleanup
+
+# Orchestrator configuration
+orchestrator:
+  enabled: true
+  interval: 6h  # How often to run sync/search/download cycle
+  startup_delay: 30s
+  token_refresh_interval: 1h
+
+# Circuit breaker configuration
+circuit_breaker:
+  max_requests: 3
+  interval: 10s
+  timeout: 60s
+
+# Retry configuration
+retry:
+  max_retries: 3
+  initial_interval: 1s
+  max_interval: 30s
+  multiplier: 2.0
+
+# Rate limiting
+rate_limit:
+  enabled: true
+  requests_per_second: 10
+  burst: 20

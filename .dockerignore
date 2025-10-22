@@ -1,0 +1,33 @@
+# Ignore build artifacts
+bin/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Ignore config files (use config.example.yaml)
+config.yaml
+token.json
+blacklist.txt
+
+# Ignore documentation
+*.md
+
+# Ignore git
+.git/
+.gitignore
+
+# Ignore test files
+*_test.go
+coverage.out
+
+# Ignore development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Ignore temp files
+tmp/
+*.tmp
