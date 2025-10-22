@@ -16,6 +16,9 @@ RUN rm go.mod && rm go.sum
 
 RUN go mod init github.com/amaumene/gomenarr && go mod tidy
 
+# Generate Wire dependency injection code
+RUN cd internal/infra && go run github.com/google/wire/cmd/wire
+
 # Build the binary with optimizations
 RUN CGO_ENABLED=1 GOOS=linux go build \
     -ldflags="-w -s -extldflags '-static'" \
