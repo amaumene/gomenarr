@@ -14,10 +14,16 @@ COPY . .
 
 RUN rm go.mod && rm go.sum
 
-RUN go mod init github.com/amaumene/gomenarr && go mod tidy
+RUN go mod init github.com/amaumene/gomenarr && go mod tidy && go mod download
+
+# Download Wire tool and its dependencies
+RUN go get github.com/google/wire/cmd/wire@latest
 
 # Generate Wire dependency injection code
 RUN cd internal/infra && go run github.com/google/wire/cmd/wire
+
+# Update dependencies after wire generation
+RUN go mod tidy
 
 # Build the binary with optimizations
 RUN CGO_ENABLED=1 GOOS=linux go build \

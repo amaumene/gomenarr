@@ -21,6 +21,9 @@ blacklist.txt
 *_test.go
 coverage.out
 
+# Ignore generated files
+wire_gen.go
+
 # Ignore development files
 .vscode/
 .idea/
