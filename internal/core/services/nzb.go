@@ -127,6 +127,7 @@ func (s *NZBService) ValidateAndScore(ctx context.Context, media *domain.Media, 
 		// Create NZB candidate (we may need this for fallback)
 		nzb := &domain.NZB{
 			TraktID:         media.TraktID,
+			IMDB:            media.IMDB,
 			Link:            result.Link,
 			Length:          result.Size,
 			Title:           result.Title,
@@ -185,6 +186,20 @@ func (s *NZBService) ValidateAndScore(ctx context.Context, media *domain.Media, 
 			Int("total_score", totalScore).
 			Msg("Accepted NZB result")
 
+		// For season packs, check if we already have one stored for this show/season
+		if nzb.IsSeasonPack() && nzb.IMDB != "" {
+			existing, err := s.repo.FindSeasonPackByIMDB(ctx, nzb.IMDB, nzb.ParsedSeason)
+			if err == nil && existing != nil {
+				log.Debug().
+					Str("release", result.Title).
+					Str("imdb", nzb.IMDB).
+					Int64("season", nzb.ParsedSeason).
+					Str("existing_release", existing.Title).
+					Msg("Season pack already exists - skipping duplicate")
+				continue
+			}
+		}
+
 		if err := s.repo.Create(ctx, nzb); err != nil {
 			log.Error().Err(err).Str("title", result.Title).Msg("Failed to create NZB")
 			continue
@@ -194,19 +209,36 @@ func (s *NZBService) ValidateAndScore(ctx context.Context, media *domain.Media, 
 
 	// Fallback logic: if nothing passed validation and we have a best candidate, store it
 	if count == 0 && bestCandidate != nil {
-		log.Warn().
-			Str("release", bestCandidate.Title).
-			Int("validation_score", bestCandidate.ValidationScore).
-			Int("quality_score", bestCandidate.QualityScore).
-			Int("total_score", bestCandidate.TotalScore).
-			Int("total_results", len(results)).
-			Int("non_blacklisted", len(results)-filtered.blacklisted).
-			Msg("No releases passed thresholds - storing best candidate as fallback")
+		// Check for duplicate season pack before storing fallback
+		shouldStore := true
+		if bestCandidate.IsSeasonPack() && bestCandidate.IMDB != "" {
+			existing, err := s.repo.FindSeasonPackByIMDB(ctx, bestCandidate.IMDB, bestCandidate.ParsedSeason)
+			if err == nil && existing != nil {
+				log.Debug().
+					Str("release", bestCandidate.Title).
+					Str("imdb", bestCandidate.IMDB).
+					Int64("season", bestCandidate.ParsedSeason).
+					Str("existing_release", existing.Title).
+					Msg("Season pack already exists - skipping fallback duplicate")
+				shouldStore = false
+			}
+		}
 
-		if err := s.repo.Create(ctx, bestCandidate); err != nil {
-			log.Error().Err(err).Str("title", bestCandidate.Title).Msg("Failed to create fallback NZB")
-		} else {
-			count = 1
+		if shouldStore {
+			log.Warn().
+				Str("release", bestCandidate.Title).
+				Int("validation_score", bestCandidate.ValidationScore).
+				Int("quality_score", bestCandidate.QualityScore).
+				Int("total_score", bestCandidate.TotalScore).
+				Int("total_results", len(results)).
+				Int("non_blacklisted", len(results)-filtered.blacklisted).
+				Msg("No releases passed thresholds - storing best candidate as fallback")
+
+			if err := s.repo.Create(ctx, bestCandidate); err != nil {
+				log.Error().Err(err).Str("title", bestCandidate.Title).Msg("Failed to create fallback NZB")
+			} else {
+				count = 1
+			}
 		}
 	}
 

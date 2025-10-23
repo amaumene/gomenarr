@@ -6,13 +6,14 @@ import "time"
 type NZB struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	TraktID         int64     `gorm:"index" json:"trakt_id"`
+	IMDB            string    `gorm:"index:idx_nzbs_imdb_season,priority:1" json:"imdb"`
 	Link            string    `json:"link"`
 	Length          int64     `json:"length"`
 	Title           string    `json:"title"`
 	Failed          bool      `gorm:"index" json:"failed"`
 	ParsedTitle     string    `json:"parsed_title"`
 	ParsedYear      int64     `json:"parsed_year"`
-	ParsedSeason    int64     `json:"parsed_season"`
+	ParsedSeason    int64     `gorm:"index:idx_nzbs_imdb_season,priority:2" json:"parsed_season"`
 	ParsedEpisode   int64     `json:"parsed_episode"`
 	Resolution      string    `json:"resolution"`
 	Source          string    `json:"source"`
