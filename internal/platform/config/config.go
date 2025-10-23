@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -149,6 +150,11 @@ func Load() (*Config, error) {
 
 	// Normalize paths relative to data.dir
 	cfg.normalizePaths()
+
+	// Ensure data directory exists after normalization
+	if err := cfg.EnsureDataDir(); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -324,4 +330,12 @@ func (c *Config) normalizePaths() {
 	if !filepath.IsAbs(c.Database.Path) && filepath.Dir(c.Database.Path) == "./data" {
 		c.Database.Path = filepath.Join(c.Data.Dir, filepath.Base(c.Database.Path))
 	}
+}
+
+// EnsureDataDir creates the data directory if it doesn't exist
+func (c *Config) EnsureDataDir() error {
+	if err := os.MkdirAll(c.Data.Dir, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+	return nil
 }
