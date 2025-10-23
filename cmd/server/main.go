@@ -79,12 +79,5 @@ func main() {
 		log.Error().Err(err).Msg("HTTP server shutdown error")
 	}
 
-	// Shutdown tracer
-	if app.TracerProvider != nil {
-		if err := app.TracerProvider.Shutdown(shutdownCtx); err != nil {
-			log.Error().Err(err).Msg("Tracer shutdown error")
-		}
-	}
-
 	log.Info().Msg("Shutdown complete")
 }
