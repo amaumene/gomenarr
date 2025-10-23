@@ -109,6 +109,7 @@ type OrchestratorConfig struct {
 	Interval             time.Duration `mapstructure:"interval"`
 	StartupDelay         time.Duration `mapstructure:"startup_delay"`
 	TokenRefreshInterval time.Duration `mapstructure:"token_refresh_interval"`
+	TaskTimeout          time.Duration `mapstructure:"task_timeout"`
 }
 
 type CircuitBreakerConfig struct {
@@ -245,6 +246,7 @@ func bindEnvs(v *viper.Viper) {
 	v.BindEnv("orchestrator.interval")
 	v.BindEnv("orchestrator.startup_delay")
 	v.BindEnv("orchestrator.token_refresh_interval")
+	v.BindEnv("orchestrator.task_timeout")
 
 	// Circuit breaker
 	v.BindEnv("circuit_breaker.max_requests")
@@ -276,10 +278,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("data.blacklist_file", "./data/blacklist.txt")
 	v.SetDefault("data.token_file", "./data/token.json")
 
-	// Database
+	// Database (optimized for SQLite - lower connection count reduces lock contention)
 	v.SetDefault("database.path", "./data/gomenarr.db")
-	v.SetDefault("database.max_open_conns", 25)
-	v.SetDefault("database.max_idle_conns", 25)
+	v.SetDefault("database.max_open_conns", 5)
+	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", "5m")
 	v.SetDefault("database.wal_mode", true)
 
@@ -326,6 +328,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("orchestrator.interval", "6h")
 	v.SetDefault("orchestrator.startup_delay", "30s")
 	v.SetDefault("orchestrator.token_refresh_interval", "1h")
+	v.SetDefault("orchestrator.task_timeout", "5m")
 
 	// Circuit breaker
 	v.SetDefault("circuit_breaker.max_requests", 3)

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/amaumene/gomenarr/internal/core/domain"
 	"github.com/amaumene/gomenarr/internal/core/ports"
@@ -90,41 +91,79 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 		return fmt.Errorf("failed to get favorite shows: %w", err)
 	}
 
+	// Job structure for parallel processing
+	type showJob struct {
+		show         ports.TraktShow
+		episodeLimit int
+		showType     string
+	}
+
+	// Create job queue with all shows
+	totalShows := len(watchlistShows) + len(favoriteShows)
+	jobs := make(chan showJob, totalShows)
+	var wg sync.WaitGroup
+	var countMutex sync.Mutex
 	count := 0
 
-	// Process watchlist shows (next 1 episode)
+	// Use worker pool for parallel episode fetching (5 concurrent workers)
+	const numWorkers = 5
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for job := range jobs {
+				// Fetch episodes for this show
+				episodes, err := s.traktClient.GetNextNEpisodes(ctx, job.show.TraktID, job.episodeLimit)
+				if err != nil {
+					log.Error().
+						Err(err).
+						Int64("show_id", job.show.TraktID).
+						Str("show_type", job.showType).
+						Int("worker_id", workerID).
+						Msg("Failed to get next episodes")
+					continue
+				}
+
+				// Upsert each episode
+				for _, ep := range episodes {
+					if err := s.upsertEpisode(ctx, ep); err != nil {
+						log.Error().
+							Err(err).
+							Int64("episode_id", ep.TraktID).
+							Int("worker_id", workerID).
+							Msg("Failed to upsert episode")
+						continue
+					}
+					countMutex.Lock()
+					count++
+					countMutex.Unlock()
+				}
+			}
+		}(i)
+	}
+
+	// Queue watchlist shows (1 episode each)
 	for _, show := range watchlistShows {
-		episodes, err := s.traktClient.GetNextNEpisodes(ctx, show.TraktID, 1)
-		if err != nil {
-			log.Error().Err(err).Int64("show_id", show.TraktID).Msg("Failed to get next episode for watchlist show")
-			continue
-		}
-
-		for _, ep := range episodes {
-			if err := s.upsertEpisode(ctx, ep); err != nil {
-				log.Error().Err(err).Int64("episode_id", ep.TraktID).Msg("Failed to upsert episode")
-				continue
-			}
-			count++
+		jobs <- showJob{
+			show:         show,
+			episodeLimit: 1,
+			showType:     "watchlist",
 		}
 	}
 
-	// Process favorite shows (next N episodes)
+	// Queue favorite shows (N episodes each)
 	for _, show := range favoriteShows {
-		episodes, err := s.traktClient.GetNextNEpisodes(ctx, show.TraktID, s.cfg.FavoritesEpisodeLimit)
-		if err != nil {
-			log.Error().Err(err).Int64("show_id", show.TraktID).Msg("Failed to get next episodes for favorite show")
-			continue
-		}
-
-		for _, ep := range episodes {
-			if err := s.upsertEpisode(ctx, ep); err != nil {
-				log.Error().Err(err).Int64("episode_id", ep.TraktID).Msg("Failed to upsert episode")
-				continue
-			}
-			count++
+		jobs <- showJob{
+			show:         show,
+			episodeLimit: s.cfg.FavoritesEpisodeLimit,
+			showType:     "favorite",
 		}
 	}
+
+	close(jobs)
+
+	// Wait for all workers to complete
+	wg.Wait()
 
 	log.Info().Int("count", count).Msg("Synced episodes from Trakt")
 	return nil

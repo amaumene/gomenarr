@@ -2,8 +2,10 @@ package orchestrator
 
 import (
 	"context"
+	"sync"
 	"time"
 
+	"github.com/amaumene/gomenarr/internal/core/domain"
 	"github.com/amaumene/gomenarr/internal/core/ports"
 	"github.com/amaumene/gomenarr/internal/core/services"
 	"github.com/amaumene/gomenarr/internal/platform/config"
@@ -84,18 +86,30 @@ func (o *Orchestrator) runCycle(ctx context.Context) {
 	log.Info().Msg("Starting orchestrator cycle")
 	start := time.Now()
 
-	// 1. Sync media
-	if err := o.runTask(ctx, "sync_movies", func(ctx context.Context) error {
-		return o.mediaSvc.SyncMovies(ctx)
-	}); err != nil {
-		log.Error().Err(err).Msg("Failed to sync movies")
-	}
+	// 1. Sync media in parallel (movies and episodes are independent)
+	var syncWg sync.WaitGroup
+	syncWg.Add(2)
 
-	if err := o.runTask(ctx, "sync_episodes", func(ctx context.Context) error {
-		return o.mediaSvc.SyncEpisodes(ctx)
-	}); err != nil {
-		log.Error().Err(err).Msg("Failed to sync episodes")
-	}
+	go func() {
+		defer syncWg.Done()
+		if err := o.runTask(ctx, "sync_movies", func(ctx context.Context) error {
+			return o.mediaSvc.SyncMovies(ctx)
+		}); err != nil {
+			log.Error().Err(err).Msg("Failed to sync movies")
+		}
+	}()
+
+	go func() {
+		defer syncWg.Done()
+		if err := o.runTask(ctx, "sync_episodes", func(ctx context.Context) error {
+			return o.mediaSvc.SyncEpisodes(ctx)
+		}); err != nil {
+			log.Error().Err(err).Msg("Failed to sync episodes")
+		}
+	}()
+
+	// Wait for both sync tasks to complete before proceeding
+	syncWg.Wait()
 
 	// 2. Search for NZBs
 	if err := o.runTask(ctx, "search_nzbs", func(ctx context.Context) error {
@@ -124,14 +138,23 @@ func (o *Orchestrator) runCycle(ctx context.Context) {
 
 func (o *Orchestrator) runTask(ctx context.Context, taskName string, task func(context.Context) error) error {
 	start := time.Now()
-	log.Info().Str("task", taskName).Msg("Running task")
+	log.Info().Str("task", taskName).Dur("timeout", o.cfg.TaskTimeout).Msg("Running task")
 
-	err := task(ctx)
+	// Create context with timeout
+	taskCtx, cancel := context.WithTimeout(ctx, o.cfg.TaskTimeout)
+	defer cancel()
+
+	err := task(taskCtx)
 
 	duration := time.Since(start).Seconds()
 	status := "success"
 	if err != nil {
-		status = "error"
+		if err == context.DeadlineExceeded {
+			status = "timeout"
+			log.Error().Str("task", taskName).Dur("timeout", o.cfg.TaskTimeout).Msg("Task timed out")
+		} else {
+			status = "error"
+		}
 	}
 
 	if o.metrics != nil && o.metrics.OrchestratorTasksTotal != nil {
@@ -151,12 +174,36 @@ func (o *Orchestrator) searchAllNZBs(ctx context.Context) error {
 
 	log.Info().Int("count", len(mediaList)).Msg("Searching NZBs for media not on disk")
 
-	for _, media := range mediaList {
-		if err := o.nzbSvc.SearchForMedia(ctx, media); err != nil {
-			log.Error().Err(err).Int64("trakt_id", media.TraktID).Msg("Failed to search for media")
-			continue
-		}
+	// Use worker pool for parallel NZB searches (5 concurrent workers)
+	const numWorkers = 5
+	jobs := make(chan *domain.Media, len(mediaList))
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for media := range jobs {
+				if err := o.nzbSvc.SearchForMedia(ctx, media); err != nil {
+					log.Error().
+						Err(err).
+						Int64("trakt_id", media.TraktID).
+						Int("worker_id", workerID).
+						Msg("Failed to search for media")
+				}
+			}
+		}(i)
 	}
+
+	// Send jobs to workers
+	for _, media := range mediaList {
+		jobs <- media
+	}
+	close(jobs)
+
+	// Wait for all workers to complete
+	wg.Wait()
 
 	return nil
 }

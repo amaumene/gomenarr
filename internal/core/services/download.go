@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/amaumene/gomenarr/internal/core/domain"
 	"github.com/amaumene/gomenarr/internal/core/ports"
@@ -18,6 +20,7 @@ type DownloadService struct {
 	nzbRepo        ports.NZBRepository
 	downloadClient ports.DownloadClient
 	cfg            config.NZBGetConfig
+	httpClient     *http.Client
 }
 
 func NewDownloadService(
@@ -26,11 +29,23 @@ func NewDownloadService(
 	downloadClient ports.DownloadClient,
 	cfg config.NZBGetConfig,
 ) *DownloadService {
+	// Configure HTTP transport with connection pooling for better performance
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableKeepAlives:   false,
+	}
+
 	return &DownloadService{
 		mediaRepo:      mediaRepo,
 		nzbRepo:        nzbRepo,
 		downloadClient: downloadClient,
 		cfg:            cfg,
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
 	}
 }
 
@@ -55,54 +70,84 @@ func (s *DownloadService) DownloadMedia(ctx context.Context) error {
 		return fmt.Errorf("failed to get history: %w", err)
 	}
 
-	// Track processed season packs
+	// Track processed season packs with concurrent access protection
 	processedSeasons := make(map[string]bool)
+	var seasonMutex sync.Mutex
 
+	// Use worker pool for parallel download queueing (3 concurrent workers)
+	const numWorkers = 3
+	jobs := make(chan *domain.Media, len(mediaList))
+	var wg sync.WaitGroup
+	var countMutex sync.Mutex
 	count := 0
-	for _, media := range mediaList {
-		// Season pack deduplication
-		if media.IsEpisode() {
-			seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
-			if processedSeasons[seasonKey] {
-				log.Debug().Str("season_key", seasonKey).Msg("Skipping episode, season pack already processed")
-				continue
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for media := range jobs {
+				// Season pack deduplication check (with mutex)
+				if media.IsEpisode() {
+					seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
+					seasonMutex.Lock()
+					if processedSeasons[seasonKey] {
+						seasonMutex.Unlock()
+						log.Debug().Str("season_key", seasonKey).Int("worker_id", workerID).Msg("Skipping episode, season pack already processed")
+						continue
+					}
+					seasonMutex.Unlock()
+				}
+
+				// Get best NZB
+				nzb, err := s.nzbRepo.FindBestByTraktID(ctx, media.TraktID)
+				if err != nil {
+					log.Debug().Int64("trakt_id", media.TraktID).Int("worker_id", workerID).Msg("No NZB found for media")
+					continue
+				}
+
+				// Check if already in queue
+				if s.isInQueue(nzb.Title, queue) {
+					log.Debug().Str("title", nzb.Title).Int("worker_id", workerID).Msg("Already in queue")
+					continue
+				}
+
+				// Check if already in history
+				if s.isInHistory(media.DownloadID, history) {
+					log.Debug().Int64("download_id", media.DownloadID).Int("worker_id", workerID).Msg("Already in history")
+					continue
+				}
+
+				// Download
+				if err := s.QueueNZB(ctx, media, nzb); err != nil {
+					log.Error().Err(err).Str("title", nzb.Title).Int("worker_id", workerID).Msg("Failed to queue NZB")
+					continue
+				}
+
+				// Mark season as processed if it's a season pack (with mutex)
+				if media.IsEpisode() && nzb.IsSeasonPack() {
+					seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
+					seasonMutex.Lock()
+					processedSeasons[seasonKey] = true
+					seasonMutex.Unlock()
+					log.Info().Str("season_key", seasonKey).Int("worker_id", workerID).Msg("Marked season pack as processed")
+				}
+
+				countMutex.Lock()
+				count++
+				countMutex.Unlock()
 			}
-		}
-
-		// Get best NZB
-		nzb, err := s.nzbRepo.FindBestByTraktID(ctx, media.TraktID)
-		if err != nil {
-			log.Debug().Int64("trakt_id", media.TraktID).Msg("No NZB found for media")
-			continue
-		}
-
-		// Check if already in queue
-		if s.isInQueue(nzb.Title, queue) {
-			log.Debug().Str("title", nzb.Title).Msg("Already in queue")
-			continue
-		}
-
-		// Check if already in history
-		if s.isInHistory(media.DownloadID, history) {
-			log.Debug().Int64("download_id", media.DownloadID).Msg("Already in history")
-			continue
-		}
-
-		// Download
-		if err := s.QueueNZB(ctx, media, nzb); err != nil {
-			log.Error().Err(err).Str("title", nzb.Title).Msg("Failed to queue NZB")
-			continue
-		}
-
-		// Mark season as processed if it's a season pack
-		if media.IsEpisode() && nzb.IsSeasonPack() {
-			seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
-			processedSeasons[seasonKey] = true
-			log.Info().Str("season_key", seasonKey).Msg("Marked season pack as processed")
-		}
-
-		count++
+		}(i)
 	}
+
+	// Send jobs to workers
+	for _, media := range mediaList {
+		jobs <- media
+	}
+	close(jobs)
+
+	// Wait for all workers to complete
+	wg.Wait()
 
 	log.Info().Int("count", count).Msg("Queued downloads")
 	return nil
@@ -111,8 +156,13 @@ func (s *DownloadService) DownloadMedia(ctx context.Context) error {
 func (s *DownloadService) QueueNZB(ctx context.Context, media *domain.Media, nzb *domain.NZB) error {
 	log.Info().Str("title", nzb.Title).Int64("trakt_id", media.TraktID).Msg("Queueing NZB")
 
-	// Download NZB file
-	resp, err := http.Get(nzb.Link)
+	// Download NZB file with context and configured client
+	req, err := http.NewRequestWithContext(ctx, "GET", nzb.Link, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download NZB: %w", err)
 	}

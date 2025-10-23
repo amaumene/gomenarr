@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/amaumene/gomenarr/internal/core/ports"
 	"github.com/amaumene/gomenarr/internal/platform/config"
@@ -20,9 +21,21 @@ type Client struct {
 }
 
 func NewClient(cfg config.NZBGetConfig) *Client {
+	// Configure HTTP transport with connection pooling for better performance
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableKeepAlives:   false,
+		ForceAttemptHTTP2:   true,
+	}
+
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
+		cfg: cfg,
+		httpClient: &http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: transport,
+		},
 	}
 }
 

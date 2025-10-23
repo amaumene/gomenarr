@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/amaumene/gomenarr/internal/core/ports"
@@ -28,17 +29,30 @@ var (
 )
 
 type Client struct {
-	cfg        config.TraktConfig
-	httpClient *http.Client
-	token      *Token
-	tokenFile  string
+	cfg          config.TraktConfig
+	httpClient   *http.Client
+	token        *Token
+	tokenFile    string
+	showIMDBCache sync.Map // Cache for show Trakt ID -> IMDB ID mapping
 }
 
 func NewClient(cfg config.TraktConfig, dataDir string) *Client {
+	// Configure HTTP transport with connection pooling for better performance
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+		DisableKeepAlives:   false,
+		ForceAttemptHTTP2:   true,
+	}
+
 	return &Client{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: cfg.Timeout},
-		tokenFile:  dataDir + "/token.json",
+		cfg: cfg,
+		httpClient: &http.Client{
+			Timeout:   cfg.Timeout,
+			Transport: transport,
+		},
+		tokenFile: dataDir + "/token.json",
 	}
 }
 
@@ -480,44 +494,64 @@ func (c *Client) GetNextNEpisodes(ctx context.Context, showTraktID int64, limit 
 		return []ports.TraktEpisode{}, nil
 	}
 
-	// If IMDB ID is missing from progress endpoint, fetch it from show details
+	// If IMDB ID is missing from progress endpoint, try cache first, then fetch from API
 	showIMDB := progress.Show.IDs.IMDB
 	if showIMDB == "" {
-		log.Warn().
-			Int64("show_trakt_id", showTraktID).
-			Msg("Show IMDB ID missing from progress endpoint, fetching from show details")
-
-		var showDetails struct {
-			IDs struct {
-				IMDB string `json:"imdb"`
-			} `json:"ids"`
-			Title string `json:"title"`
-		}
-
-		showURL := fmt.Sprintf("/shows/%d", showTraktID)
-		if err := c.get(ctx, showURL, &showDetails); err != nil {
-			log.Error().
-				Err(err).
+		// Check cache first
+		if cached, ok := c.showIMDBCache.Load(showTraktID); ok {
+			showIMDB = cached.(string)
+			log.Debug().
 				Int64("show_trakt_id", showTraktID).
-				Msg("Failed to fetch show details from Trakt")
-			return nil, fmt.Errorf("failed to fetch show details: %w", err)
-		}
+				Str("show_imdb", showIMDB).
+				Msg("Retrieved show IMDB ID from cache")
+		} else {
+			// Not in cache, fetch from API
+			log.Warn().
+				Int64("show_trakt_id", showTraktID).
+				Msg("Show IMDB ID missing from progress endpoint and cache, fetching from show details")
 
-		showIMDB = showDetails.IDs.IMDB
+			var showDetails struct {
+				IDs struct {
+					IMDB string `json:"imdb"`
+				} `json:"ids"`
+				Title string `json:"title"`
+			}
 
-		log.Info().
-			Int64("show_trakt_id", showTraktID).
-			Str("show_title", showDetails.Title).
-			Str("show_imdb", showIMDB).
-			Msg("Fetched show IMDB ID from show details endpoint")
+			showURL := fmt.Sprintf("/shows/%d", showTraktID)
+			if err := c.get(ctx, showURL, &showDetails); err != nil {
+				log.Error().
+					Err(err).
+					Int64("show_trakt_id", showTraktID).
+					Msg("Failed to fetch show details from Trakt")
+				return nil, fmt.Errorf("failed to fetch show details: %w", err)
+			}
 
-		if showIMDB == "" {
-			log.Error().
+			showIMDB = showDetails.IDs.IMDB
+
+			log.Info().
 				Int64("show_trakt_id", showTraktID).
 				Str("show_title", showDetails.Title).
-				Msg("Show has no IMDB ID in Trakt database - cannot search for NZBs")
-			return nil, fmt.Errorf("show %d has no IMDB ID", showTraktID)
+				Str("show_imdb", showIMDB).
+				Msg("Fetched show IMDB ID from show details endpoint")
+
+			if showIMDB == "" {
+				log.Error().
+					Int64("show_trakt_id", showTraktID).
+					Str("show_title", showDetails.Title).
+					Msg("Show has no IMDB ID in Trakt database - cannot search for NZBs")
+				return nil, fmt.Errorf("show %d has no IMDB ID", showTraktID)
+			}
+
+			// Store in cache for future use
+			c.showIMDBCache.Store(showTraktID, showIMDB)
+			log.Debug().
+				Int64("show_trakt_id", showTraktID).
+				Str("show_imdb", showIMDB).
+				Msg("Stored show IMDB ID in cache")
 		}
+	} else {
+		// IMDB was in progress response, store it in cache for future use
+		c.showIMDBCache.Store(showTraktID, showIMDB)
 	}
 
 	episodes := make([]ports.TraktEpisode, 0, limit)
