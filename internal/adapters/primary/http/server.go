@@ -10,9 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 	"github.com/amaumene/gomenarr/internal/platform/config"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
-	"github.com/gofiber/fiber/v2/middleware/adaptor"
 )
 
 type Server struct {
@@ -49,9 +47,6 @@ func (s *Server) setupRoutes() {
 	// Health checks
 	s.app.Get("/health", s.handlers.Health)
 	s.app.Get("/ready", s.handlers.Ready)
-
-	// Metrics
-	s.app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
 	// API routes
 	api := s.app.Group("/api")

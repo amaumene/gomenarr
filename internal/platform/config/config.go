@@ -14,10 +14,7 @@ type Config struct {
 	Server         ServerConfig         `mapstructure:"server"`
 	Data           DataConfig           `mapstructure:"data"`
 	Database       DatabaseConfig       `mapstructure:"database"`
-	Cache          CacheConfig          `mapstructure:"cache"`
 	Logging        LoggingConfig        `mapstructure:"logging"`
-	Metrics        MetricsConfig        `mapstructure:"metrics"`
-	Tracing        TracingConfig        `mapstructure:"tracing"`
 	Trakt          TraktConfig          `mapstructure:"trakt"`
 	Newsnab        NewsnabConfig        `mapstructure:"newsnab"`
 	NZBGet         NZBGetConfig         `mapstructure:"nzbget"`
@@ -50,26 +47,10 @@ type DatabaseConfig struct {
 	WALMode         bool          `mapstructure:"wal_mode"`
 }
 
-type CacheConfig struct {
-	DefaultExpiration time.Duration `mapstructure:"default_expiration"`
-	CleanupInterval   time.Duration `mapstructure:"cleanup_interval"`
-}
-
 type LoggingConfig struct {
 	Level  string `mapstructure:"level"`
 	Format string `mapstructure:"format"`
 	Output string `mapstructure:"output"`
-}
-
-type MetricsConfig struct {
-	Enabled   bool   `mapstructure:"enabled"`
-	Namespace string `mapstructure:"namespace"`
-}
-
-type TracingConfig struct {
-	Enabled     bool   `mapstructure:"enabled"`
-	Endpoint    string `mapstructure:"endpoint"`
-	ServiceName string `mapstructure:"service_name"`
 }
 
 type TraktConfig struct {
@@ -195,23 +176,10 @@ func bindEnvs(v *viper.Viper) {
 	v.BindEnv("database.conn_max_lifetime")
 	v.BindEnv("database.wal_mode")
 
-	// Cache
-	v.BindEnv("cache.default_expiration")
-	v.BindEnv("cache.cleanup_interval")
-
 	// Logging
 	v.BindEnv("logging.level")
 	v.BindEnv("logging.format")
 	v.BindEnv("logging.output")
-
-	// Metrics
-	v.BindEnv("metrics.enabled")
-	v.BindEnv("metrics.namespace")
-
-	// Tracing
-	v.BindEnv("tracing.enabled")
-	v.BindEnv("tracing.endpoint")
-	v.BindEnv("tracing.service_name")
 
 	// Trakt
 	v.BindEnv("trakt.client_id")
@@ -285,22 +253,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.conn_max_lifetime", "5m")
 	v.SetDefault("database.wal_mode", true)
 
-	// Cache
-	v.SetDefault("cache.default_expiration", "1h")
-	v.SetDefault("cache.cleanup_interval", "10m")
-
 	// Logging
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
 	v.SetDefault("logging.output", "stdout")
-
-	// Metrics
-	v.SetDefault("metrics.enabled", true)
-	v.SetDefault("metrics.namespace", "gomenarr")
-
-	// Tracing
-	v.SetDefault("tracing.enabled", false)
-	v.SetDefault("tracing.service_name", "gomenarr")
 
 	// Trakt
 	v.SetDefault("trakt.redirect_uri", "urn:ietf:wg:oauth:2.0:oob")

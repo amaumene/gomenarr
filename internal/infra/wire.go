@@ -15,10 +15,7 @@ import (
 	"github.com/amaumene/gomenarr/internal/infra/database"
 	"github.com/amaumene/gomenarr/internal/orchestrator"
 	"github.com/amaumene/gomenarr/internal/platform/config"
-	"github.com/amaumene/gomenarr/internal/platform/metrics"
-	"github.com/amaumene/gomenarr/internal/platform/tracing"
 	"github.com/amaumene/gomenarr/pkg/scorer"
-	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"gorm.io/gorm"
 )
 
@@ -27,7 +24,6 @@ type Application struct {
 	DB             *gorm.DB
 	Server         *httpAdapter.Server
 	Orchestrator   *orchestrator.Orchestrator
-	TracerProvider *tracesdk.TracerProvider
 	MediaService   *services.MediaService
 	CleanupService *services.CleanupService
 	TraktClient    ports.TraktClient
@@ -37,12 +33,6 @@ func InitializeApplication() (*Application, error) {
 	wire.Build(
 		// Config
 		config.Load,
-
-		// Platform
-		metrics.New,
-		provideMetricsConfig,
-		tracing.Setup,
-		provideTracingConfig,
 
 		// Database
 		database.New,
@@ -108,14 +98,6 @@ func provideBlacklist(cfg *config.Config) *scorer.Blacklist {
 
 func provideDatabaseConfig(cfg *config.Config) config.DatabaseConfig {
 	return cfg.Database
-}
-
-func provideMetricsConfig(cfg *config.Config) config.MetricsConfig {
-	return cfg.Metrics
-}
-
-func provideTracingConfig(cfg *config.Config) config.TracingConfig {
-	return cfg.Tracing
 }
 
 func provideTraktConfig(cfg *config.Config) config.TraktConfig {

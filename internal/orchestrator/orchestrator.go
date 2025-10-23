@@ -9,7 +9,6 @@ import (
 	"github.com/amaumene/gomenarr/internal/core/ports"
 	"github.com/amaumene/gomenarr/internal/core/services"
 	"github.com/amaumene/gomenarr/internal/platform/config"
-	"github.com/amaumene/gomenarr/internal/platform/metrics"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,7 +19,6 @@ type Orchestrator struct {
 	cleanupSvc  *services.CleanupService
 	traktClient ports.TraktClient
 	cfg         config.OrchestratorConfig
-	metrics     *metrics.Metrics
 }
 
 func New(
@@ -30,7 +28,6 @@ func New(
 	cleanupSvc *services.CleanupService,
 	traktClient ports.TraktClient,
 	cfg config.OrchestratorConfig,
-	m *metrics.Metrics,
 ) *Orchestrator {
 	return &Orchestrator{
 		mediaSvc:    mediaSvc,
@@ -39,7 +36,6 @@ func New(
 		cleanupSvc:  cleanupSvc,
 		traktClient: traktClient,
 		cfg:         cfg,
-		metrics:     m,
 	}
 }
 
@@ -146,7 +142,7 @@ func (o *Orchestrator) runTask(ctx context.Context, taskName string, task func(c
 
 	err := task(taskCtx)
 
-	duration := time.Since(start).Seconds()
+	duration := time.Since(start)
 	status := "success"
 	if err != nil {
 		if err == context.DeadlineExceeded {
@@ -157,12 +153,7 @@ func (o *Orchestrator) runTask(ctx context.Context, taskName string, task func(c
 		}
 	}
 
-	if o.metrics != nil && o.metrics.OrchestratorTasksTotal != nil {
-		o.metrics.OrchestratorTasksTotal.WithLabelValues(taskName, status).Inc()
-		o.metrics.OrchestratorTaskDuration.WithLabelValues(taskName).Observe(duration)
-	}
-
-	log.Info().Str("task", taskName).Str("status", status).Dur("duration", time.Duration(duration*float64(time.Second))).Msg("Task completed")
+	log.Info().Str("task", taskName).Str("status", status).Dur("duration", duration).Msg("Task completed")
 	return err
 }
 
