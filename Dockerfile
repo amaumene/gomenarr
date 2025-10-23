@@ -44,9 +44,6 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/gomenarr-server /app/
 
-# Copy migrations
-COPY --from=builder /build/migrations /app/migrations/
-
 # Copy example config (can be overridden via volume mount)
 COPY --from=builder /build/config.example.yaml /app/config.example.yaml
 
