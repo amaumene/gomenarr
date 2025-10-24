@@ -69,6 +69,8 @@ func TestLoadDefaults(t *testing.T) {
 		"GOMENARR_NZBGET_URL",
 		"GOMENARR_TRAKT_CLIENT_ID",
 		"GOMENARR_SERVER_PORT",
+		"GOMENARR_DATA_DIR",
+		"GOMENARR_DATABASE_PATH",
 	}
 	for _, key := range envVars {
 		os.Unsetenv(key)
@@ -88,5 +90,132 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.NZBGet.Category != "trakt" {
 		t.Errorf("NZBGet.Category = %v, want default %v", cfg.NZBGet.Category, "trakt")
+	}
+}
+
+func TestPathNormalization(t *testing.T) {
+	// Create temp directories for absolute path tests
+	tempDir := t.TempDir()
+
+	tests := []struct {
+		name             string
+		envDataDir       string
+		envDatabasePath  string
+		envBlacklistFile string
+		envTokenFile     string
+		wantDatabasePath string
+		wantBlacklist    string
+		wantToken        string
+	}{
+		{
+			name:             "Default paths - all defaults should use data dir",
+			envDataDir:       "",
+			envDatabasePath:  "",
+			envBlacklistFile: "",
+			envTokenFile:     "",
+			wantDatabasePath: "data/gomenarr.db",     // Normalized from ./data/gomenarr.db
+			wantBlacklist:    "data/blacklist.txt",   // Normalized from ./data/blacklist.txt
+			wantToken:        "data/token.json",      // Normalized from ./data/token.json
+		},
+		{
+			name:             "Custom data dir - absolute path (using temp dir)",
+			envDataDir:       tempDir + "/data",
+			envDatabasePath:  "",
+			envBlacklistFile: "",
+			envTokenFile:     "",
+			wantDatabasePath: tempDir + "/data/gomenarr.db",
+			wantBlacklist:    tempDir + "/data/blacklist.txt",
+			wantToken:        tempDir + "/data/token.json",
+		},
+		{
+			name:             "Custom data dir - relative path",
+			envDataDir:       "mydata",
+			envDatabasePath:  "",
+			envBlacklistFile: "",
+			envTokenFile:     "",
+			wantDatabasePath: "mydata/gomenarr.db",
+			wantBlacklist:    "mydata/blacklist.txt",
+			wantToken:        "mydata/token.json",
+		},
+		{
+			name:             "Explicit database path - absolute - should not normalize",
+			envDataDir:       tempDir + "/data",
+			envDatabasePath:  tempDir + "/custom/path/db.db",
+			envBlacklistFile: "",
+			envTokenFile:     "",
+			wantDatabasePath: tempDir + "/custom/path/db.db",
+			wantBlacklist:    tempDir + "/data/blacklist.txt",
+			wantToken:        tempDir + "/data/token.json",
+		},
+		{
+			name:             "Explicit database path - custom relative - should not normalize",
+			envDataDir:       tempDir + "/data2",
+			envDatabasePath:  "custom/db.db",
+			envBlacklistFile: "",
+			envTokenFile:     "",
+			wantDatabasePath: "custom/db.db",
+			wantBlacklist:    tempDir + "/data2/blacklist.txt",
+			wantToken:        tempDir + "/data2/token.json",
+		},
+		{
+			name:             "All custom absolute paths",
+			envDataDir:       tempDir + "/var/lib/app",
+			envDatabasePath:  tempDir + "/opt/db/app.db",
+			envBlacklistFile: tempDir + "/etc/app/blacklist.txt",
+			envTokenFile:     tempDir + "/etc/app/token.json",
+			wantDatabasePath: tempDir + "/opt/db/app.db",
+			wantBlacklist:    tempDir + "/etc/app/blacklist.txt",
+			wantToken:        tempDir + "/etc/app/token.json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clear all env vars first
+			envVars := []string{
+				"GOMENARR_DATA_DIR",
+				"GOMENARR_DATABASE_PATH",
+				"GOMENARR_DATA_BLACKLIST_FILE",
+				"GOMENARR_DATA_TOKEN_FILE",
+			}
+			for _, key := range envVars {
+				os.Unsetenv(key)
+			}
+
+			// Set test-specific env vars
+			if tt.envDataDir != "" {
+				os.Setenv("GOMENARR_DATA_DIR", tt.envDataDir)
+				defer os.Unsetenv("GOMENARR_DATA_DIR")
+			}
+			if tt.envDatabasePath != "" {
+				os.Setenv("GOMENARR_DATABASE_PATH", tt.envDatabasePath)
+				defer os.Unsetenv("GOMENARR_DATABASE_PATH")
+			}
+			if tt.envBlacklistFile != "" {
+				os.Setenv("GOMENARR_DATA_BLACKLIST_FILE", tt.envBlacklistFile)
+				defer os.Unsetenv("GOMENARR_DATA_BLACKLIST_FILE")
+			}
+			if tt.envTokenFile != "" {
+				os.Setenv("GOMENARR_DATA_TOKEN_FILE", tt.envTokenFile)
+				defer os.Unsetenv("GOMENARR_DATA_TOKEN_FILE")
+			}
+
+			// Load config
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+
+			// Verify paths
+			if cfg.Database.Path != tt.wantDatabasePath {
+				t.Errorf("Database.Path = %q, want %q", cfg.Database.Path, tt.wantDatabasePath)
+			}
+			if cfg.Data.BlacklistFile != tt.wantBlacklist {
+				t.Errorf("Data.BlacklistFile = %q, want %q", cfg.Data.BlacklistFile, tt.wantBlacklist)
+			}
+			if cfg.Data.TokenFile != tt.wantToken {
+				t.Errorf("Data.TokenFile = %q, want %q", cfg.Data.TokenFile, tt.wantToken)
+			}
+		})
 	}
 }

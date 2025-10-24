@@ -9,6 +9,7 @@ import (
 
 	"github.com/amaumene/gomenarr/internal/core/domain"
 	"github.com/amaumene/gomenarr/internal/platform/config"
+	"github.com/rs/zerolog/log"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -16,11 +17,16 @@ import (
 
 // New creates a new database connection
 func New(cfg config.DatabaseConfig) (*gorm.DB, error) {
+	// Log database initialization
+	log.Info().Str("path", cfg.Path).Msg("Initializing database")
+
 	// Ensure parent directory exists before opening database
 	dbDir := filepath.Dir(cfg.Path)
+	log.Debug().Str("dir", dbDir).Msg("Creating database directory")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
+	log.Debug().Msg("Database directory created successfully")
 
 	// Configure SQLite connection string
 	dsn := cfg.Path
@@ -48,9 +54,11 @@ func New(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 
 	// Auto-migrate schemas
+	log.Info().Msg("Running database auto-migration")
 	if err := db.AutoMigrate(&domain.Media{}, &domain.NZB{}); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate: %w", err)
 	}
+	log.Info().Str("path", cfg.Path).Msg("Database initialized successfully")
 
 	return db, nil
 }

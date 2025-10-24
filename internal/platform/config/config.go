@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 )
 
@@ -313,29 +314,41 @@ func setDefaults(v *viper.Viper) {
 // This allows users to set GOMENARR_DATA_DIR and have all child paths automatically update.
 // Individual paths can still be overridden with absolute paths or custom relative paths.
 func (c *Config) normalizePaths() {
-	// Only normalize paths that appear to be defaults (directory is ./data)
-	// This preserves user-specified absolute paths and custom overrides
+	// Normalize each path that uses the default "data" directory
+	// This handles both "./data" and "data" directory prefixes correctly
+	c.Data.BlacklistFile = c.normalizePath(c.Data.BlacklistFile)
+	c.Data.TokenFile = c.normalizePath(c.Data.TokenFile)
+	c.Database.Path = c.normalizePath(c.Database.Path)
+}
 
-	// Normalize blacklist file path
-	if !filepath.IsAbs(c.Data.BlacklistFile) && filepath.Dir(c.Data.BlacklistFile) == "./data" {
-		c.Data.BlacklistFile = filepath.Join(c.Data.Dir, filepath.Base(c.Data.BlacklistFile))
+// normalizePath normalizes a single path relative to data.dir if it uses the default "data" directory.
+// Absolute paths and custom relative paths are preserved.
+func (c *Config) normalizePath(path string) string {
+	// Don't normalize absolute paths (user specified an explicit location)
+	if filepath.IsAbs(path) {
+		return path
 	}
 
-	// Normalize token file path
-	if !filepath.IsAbs(c.Data.TokenFile) && filepath.Dir(c.Data.TokenFile) == "./data" {
-		c.Data.TokenFile = filepath.Join(c.Data.Dir, filepath.Base(c.Data.TokenFile))
+	// Clean the path to normalize ./data to data for comparison
+	// This fixes the bug where filepath.Dir("./data/file") returns "data" not "./data"
+	cleanPath := filepath.Clean(path)
+	cleanDir := filepath.Dir(cleanPath)
+
+	// If the directory is "data" (our default), normalize it to use the configured data.dir
+	if cleanDir == "data" {
+		return filepath.Join(c.Data.Dir, filepath.Base(cleanPath))
 	}
 
-	// Normalize database path
-	if !filepath.IsAbs(c.Database.Path) && filepath.Dir(c.Database.Path) == "./data" {
-		c.Database.Path = filepath.Join(c.Data.Dir, filepath.Base(c.Database.Path))
-	}
+	// Otherwise, preserve the user's custom relative path
+	return path
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist
 func (c *Config) EnsureDataDir() error {
+	log.Debug().Str("path", c.Data.Dir).Msg("Ensuring data directory exists")
 	if err := os.MkdirAll(c.Data.Dir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
+	log.Info().Str("path", c.Data.Dir).Msg("Data directory ready")
 	return nil
 }
