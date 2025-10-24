@@ -29,11 +29,13 @@ var (
 )
 
 type Client struct {
-	cfg          config.TraktConfig
-	httpClient   *http.Client
-	token        *Token
-	tokenFile    string
-	showIMDBCache sync.Map // Cache for show Trakt ID -> IMDB ID mapping
+	cfg            config.TraktConfig
+	httpClient     *http.Client
+	token          *Token
+	tokenFile      string
+	showIMDBCache  sync.Map // Cache for show Trakt ID -> IMDB ID mapping
+	watchedCache   map[int64]bool // Cache for watched Trakt IDs
+	watchedCacheMu sync.RWMutex
 }
 
 func NewClient(cfg config.TraktConfig, dataDir string) *Client {
@@ -897,4 +899,110 @@ func (c *Client) loadToken() error {
 	c.token = &token
 	log.Info().Msg("Loaded Trakt token from file")
 	return nil
+}
+
+// IsWatched checks if a media item is in the watched history
+// Returns true if the Trakt ID is found in the watched cache
+func (c *Client) IsWatched(ctx context.Context, traktID int64, mediaType string) (bool, error) {
+	// Check cache first (read lock)
+	c.watchedCacheMu.RLock()
+	if c.watchedCache != nil {
+		watched, exists := c.watchedCache[traktID]
+		c.watchedCacheMu.RUnlock()
+		if exists {
+			return watched, nil
+		}
+		// Cache exists but this ID not found, return false
+		return false, nil
+	}
+	c.watchedCacheMu.RUnlock()
+
+	// Cache not populated, fetch from Trakt API
+	if err := c.fetchWatchedHistory(ctx, mediaType); err != nil {
+		return false, fmt.Errorf("failed to fetch watched history: %w", err)
+	}
+
+	// Check again after fetching
+	c.watchedCacheMu.RLock()
+	watched := c.watchedCache[traktID]
+	c.watchedCacheMu.RUnlock()
+
+	return watched, nil
+}
+
+// fetchWatchedHistory fetches the watched history from Trakt and populates the cache
+func (c *Client) fetchWatchedHistory(ctx context.Context, mediaType string) error {
+	c.watchedCacheMu.Lock()
+	defer c.watchedCacheMu.Unlock()
+
+	// Double-check cache wasn't populated by another goroutine
+	if c.watchedCache != nil {
+		return nil
+	}
+
+	// Initialize cache
+	c.watchedCache = make(map[int64]bool)
+
+	var endpoint string
+	if mediaType == "episode" || mediaType == "show" {
+		endpoint = "/sync/watched/shows"
+
+		// Parse show watched history
+		var shows []struct {
+			Show struct {
+				IDs struct {
+					Trakt int64 `json:"trakt"`
+				} `json:"ids"`
+			} `json:"show"`
+			Seasons []struct {
+				Number   int `json:"number"`
+				Episodes []struct {
+					Number int `json:"number"`
+				} `json:"episodes"`
+			} `json:"seasons"`
+		}
+
+		if err := c.get(ctx, endpoint, &shows); err != nil {
+			return fmt.Errorf("failed to get watched shows: %w", err)
+		}
+
+		// Mark all watched shows and episodes
+		for _, show := range shows {
+			c.watchedCache[show.Show.IDs.Trakt] = true
+		}
+
+		log.Info().Int("count", len(shows)).Msg("Cached watched shows")
+	} else {
+		endpoint = "/sync/watched/movies"
+
+		// Parse movie watched history
+		var movies []struct {
+			Movie struct {
+				IDs struct {
+					Trakt int64 `json:"trakt"`
+				} `json:"ids"`
+			} `json:"movie"`
+		}
+
+		if err := c.get(ctx, endpoint, &movies); err != nil {
+			return fmt.Errorf("failed to get watched movies: %w", err)
+		}
+
+		// Mark all watched movies
+		for _, movie := range movies {
+			c.watchedCache[movie.Movie.IDs.Trakt] = true
+		}
+
+		log.Info().Int("count", len(movies)).Msg("Cached watched movies")
+	}
+
+	return nil
+}
+
+// ClearWatchedCache clears the watched cache, forcing a refresh on next check
+func (c *Client) ClearWatchedCache() {
+	c.watchedCacheMu.Lock()
+	c.watchedCache = nil
+	c.watchedCacheMu.Unlock()
+	log.Debug().Msg("Cleared watched cache")
 }

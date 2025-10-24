@@ -77,15 +77,22 @@ func (s *CleanupService) CleanupWatched(ctx context.Context) error {
 	}
 
 	// Delete media from database
+	log.Debug().Int("count", len(traktIDs)).Msg("Deleting media records from database")
 	if err := s.mediaRepo.DeleteByTraktIDs(ctx, traktIDs); err != nil {
 		return fmt.Errorf("failed to delete media: %w", err)
 	}
+	log.Info().Int("count", len(traktIDs)).Msg("Deleted media records")
 
 	// Delete NZBs from database
+	log.Debug().Int("count", len(traktIDs)).Msg("Deleting NZB records from database")
 	if err := s.nzbRepo.DeleteByTraktIDs(ctx, traktIDs); err != nil {
 		return fmt.Errorf("failed to delete NZBs: %w", err)
 	}
+	log.Info().Int("count", len(traktIDs)).Msg("Deleted NZB records")
 
-	log.Info().Int("count", len(traktIDs)).Msg("Cleaned up watched media")
+	// Clear watched cache to force refresh
+	s.traktClient.ClearWatchedCache()
+
+	log.Info().Int("count", len(traktIDs)).Msg("Cleaned up watched media (db, nzb, files)")
 	return nil
 }

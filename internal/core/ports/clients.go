@@ -63,6 +63,11 @@ type TraktClient interface {
 	
 	// GetWatchHistory returns recently watched items
 	GetWatchHistory(ctx context.Context, days int) ([]TraktHistoryItem, error)
+
+	// IsWatched checks if a media item is in the watched history
+	IsWatched(ctx context.Context, traktID int64, mediaType string) (bool, error)
+	// ClearWatchedCache clears the watched cache
+	ClearWatchedCache()
 }
 
 // NewsnabResult represents a search result from Newsnab

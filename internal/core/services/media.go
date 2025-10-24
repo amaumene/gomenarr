@@ -53,9 +53,24 @@ func (s *MediaService) SyncMovies(ctx context.Context) error {
 		}
 	}
 
-	// Upsert to database
+	// Upsert to database (skip watched content)
 	count := 0
 	for _, movie := range movieMap {
+		// Check if movie is watched
+		watched, err := s.traktClient.IsWatched(ctx, movie.TraktID, "movie")
+		if err != nil {
+			log.Warn().Err(err).Int64("movie_id", movie.TraktID).Msg("Failed to check watched status, skipping movie")
+			continue
+		}
+
+		if watched {
+			log.Debug().
+				Int64("movie_id", movie.TraktID).
+				Str("title", movie.Title).
+				Msg("Skipping watched movie")
+			continue
+		}
+
 		media := &domain.Media{
 			TraktID: movie.TraktID,
 			IMDB:    movie.IMDB,
@@ -124,8 +139,28 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 					continue
 				}
 
-				// Upsert each episode
+				// Upsert each episode (skip watched content)
 				for _, ep := range episodes {
+					// Check if episode is watched
+					watched, err := s.traktClient.IsWatched(ctx, ep.TraktID, "episode")
+					if err != nil {
+						log.Warn().
+							Err(err).
+							Int64("episode_id", ep.TraktID).
+							Int("worker_id", workerID).
+							Msg("Failed to check watched status, skipping episode")
+						continue
+					}
+
+					if watched {
+						log.Debug().
+							Int64("episode_id", ep.TraktID).
+							Str("title", ep.Title).
+							Int("worker_id", workerID).
+							Msg("Skipping watched episode")
+						continue
+					}
+
 					if err := s.upsertEpisode(ctx, ep); err != nil {
 						log.Error().
 							Err(err).

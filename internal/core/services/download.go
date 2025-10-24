@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/amaumene/gomenarr/internal/core/domain"
@@ -70,103 +70,90 @@ func (s *DownloadService) DownloadMedia(ctx context.Context) error {
 		return fmt.Errorf("failed to get history: %w", err)
 	}
 
-	// Track processed season packs with concurrent access protection
+	// Track processed items in this run (prevents duplicates within same batch)
 	processedSeasons := make(map[string]bool)
-	var seasonMutex sync.Mutex
-
-	// Use worker pool for parallel download queueing (3 concurrent workers)
-	const numWorkers = 3
-	jobs := make(chan *domain.Media, len(mediaList))
-	var wg sync.WaitGroup
-	var countMutex sync.Mutex
+	queuedThisRun := make(map[string]bool)
 	count := 0
 
-	// Start workers
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			for media := range jobs {
-				// Season pack deduplication check (with mutex)
-				if media.IsEpisode() {
-					seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
-					seasonMutex.Lock()
-					if processedSeasons[seasonKey] {
-						seasonMutex.Unlock()
-						log.Debug().Str("season_key", seasonKey).Int("worker_id", workerID).Msg("Skipping episode, season pack already processed")
-						continue
-					}
-					seasonMutex.Unlock()
-				}
-
-				// Get best NZB - prefer season packs for episodes
-				var nzb *domain.NZB
-				var err error
-
-				if media.IsEpisode() && media.IMDB != "" {
-					// Try to find season pack first
-					nzb, err = s.nzbRepo.FindBestSeasonPack(ctx, media.IMDB, media.Season)
-					if err == nil {
-						log.Debug().
-							Str("imdb", media.IMDB).
-							Int64("season", media.Season).
-							Str("title", nzb.Title).
-							Int("worker_id", workerID).
-							Msg("Found season pack for episode")
-					}
-				}
-
-				// Fallback to episode-specific NZB if no season pack found
-				if nzb == nil {
-					nzb, err = s.nzbRepo.FindBestByTraktID(ctx, media.TraktID)
-					if err != nil {
-						log.Debug().Int64("trakt_id", media.TraktID).Int("worker_id", workerID).Msg("No NZB found for media")
-						continue
-					}
-				}
-
-				// Check if already in queue
-				if s.isInQueue(nzb.Title, queue) {
-					log.Debug().Str("title", nzb.Title).Int("worker_id", workerID).Msg("Already in queue")
-					continue
-				}
-
-				// Check if already in history
-				if s.isInHistory(media.DownloadID, history) {
-					log.Debug().Int64("download_id", media.DownloadID).Int("worker_id", workerID).Msg("Already in history")
-					continue
-				}
-
-				// Download
-				if err := s.QueueNZB(ctx, media, nzb); err != nil {
-					log.Error().Err(err).Str("title", nzb.Title).Int("worker_id", workerID).Msg("Failed to queue NZB")
-					continue
-				}
-
-				// Mark season as processed if it's a season pack (with mutex)
-				if media.IsEpisode() && nzb.IsSeasonPack {
-					seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
-					seasonMutex.Lock()
-					processedSeasons[seasonKey] = true
-					seasonMutex.Unlock()
-					log.Info().Str("season_key", seasonKey).Int("worker_id", workerID).Msg("Marked season pack as processed")
-				}
-
-				countMutex.Lock()
-				count++
-				countMutex.Unlock()
-			}
-		}(i)
-	}
-
-	// Send jobs to workers
+	// Process media sequentially (no race conditions)
 	for _, media := range mediaList {
-		jobs <- media
-	}
-	close(jobs)
+		// Skip if already has download ID (already queued/downloaded)
+		if media.DownloadID > 0 {
+			log.Debug().
+				Int64("trakt_id", media.TraktID).
+				Int64("download_id", media.DownloadID).
+				Msg("Already has download ID, skipping")
+			continue
+		}
 
-	// Wait for all workers to complete
-	wg.Wait()
+		// Season pack deduplication check
+		if media.IsEpisode() {
+			seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
+			if processedSeasons[seasonKey] {
+				log.Debug().Str("season_key", seasonKey).Msg("Skipping episode, season pack already processed")
+				continue
+			}
+		}
+
+		// Get best NZB - prefer season packs for episodes
+		var nzb *domain.NZB
+
+		if media.IsEpisode() && media.IMDB != "" {
+			// Try to find season pack first
+			nzb, err = s.nzbRepo.FindBestSeasonPack(ctx, media.IMDB, media.Season)
+			if err == nil {
+				log.Debug().
+					Str("imdb", media.IMDB).
+					Int64("season", media.Season).
+					Str("title", nzb.Title).
+					Msg("Found season pack for episode")
+			}
+		}
+
+		// Fallback to episode-specific NZB if no season pack found
+		if nzb == nil {
+			nzb, err = s.nzbRepo.FindBestByTraktID(ctx, media.TraktID)
+			if err != nil {
+				log.Debug().Int64("trakt_id", media.TraktID).Msg("No NZB found for media")
+				continue
+			}
+		}
+
+		// Check if already queued in this run
+		if queuedThisRun[nzb.Title] {
+			log.Debug().Str("title", nzb.Title).Msg("Already queued in this run")
+			continue
+		}
+
+		// Check if already in queue
+		if s.isInQueue(nzb.Title, queue) {
+			log.Debug().Str("title", nzb.Title).Msg("Already in queue")
+			continue
+		}
+
+		// Check if already in history
+		if s.isInHistory(media.DownloadID, history) {
+			log.Debug().Int64("download_id", media.DownloadID).Msg("Already in history")
+			continue
+		}
+
+		// Queue download
+		if err := s.QueueNZB(ctx, media, nzb); err != nil {
+			log.Error().Err(err).Str("title", nzb.Title).Msg("Failed to queue NZB")
+			continue
+		}
+
+		// Mark as processed
+		queuedThisRun[nzb.Title] = true
+		count++
+
+		// Mark season as processed if it's a season pack
+		if media.IsEpisode() && nzb.IsSeasonPack {
+			seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
+			processedSeasons[seasonKey] = true
+			log.Info().Str("season_key", seasonKey).Msg("Marked season pack as processed")
+		}
+	}
 
 	log.Info().Int("count", count).Msg("Queued downloads")
 	return nil
@@ -219,9 +206,61 @@ func (s *DownloadService) QueueNZB(ctx context.Context, media *domain.Media, nzb
 	return nil
 }
 
+// normalizeReleaseTitle normalizes a release title for comparison
+// Removes quality indicators, codecs, sources, and group tags
+// Keeps show name and season/episode information
+func normalizeReleaseTitle(title string) string {
+	// Remove .nzb extension
+	title = strings.TrimSuffix(title, ".nzb")
+
+	// Convert to uppercase for consistent matching
+	normalized := strings.ToUpper(title)
+
+	// Remove quality indicators (2160p, 1080p, 720p, 480p, 4K, UHD, etc.)
+	qualityPattern := regexp.MustCompile(`(?i)\b(2160P|1080P|720P|480P|4K|UHD|HD|SD)\b`)
+	normalized = qualityPattern.ReplaceAllString(normalized, "")
+
+	// Remove codec indicators (H.265, H.264, x265, x264, HEVC, AVC, etc.)
+	codecPattern := regexp.MustCompile(`(?i)\b(H\.?265|H\.?264|X265|X264|HEVC|AVC|VC-?1|XVID)\b`)
+	normalized = codecPattern.ReplaceAllString(normalized, "")
+
+	// Remove source indicators (WEB-DL, WEBDL, WEB, BluRay, Blu-ray, REMUX, HDTV, DVDRip, etc.)
+	sourcePattern := regexp.MustCompile(`(?i)\b(WEB-?DL|WEBRIP|WEB|BLU-?RAY|BRRIP|REMUX|HDTV|DVDRIP|DVD)\b`)
+	normalized = sourcePattern.ReplaceAllString(normalized, "")
+
+	// Remove audio indicators (DDP5.1, DD5.1, Atmos, TrueHD, DTS, AAC, FLAC, etc.)
+	audioPattern := regexp.MustCompile(`(?i)\b(DDP?A?[0-9.]+|ATMOS|TRUEHD|DTS(-?HD)?(-?MA)?|AAC|FLAC|LPCM|AC3)\b`)
+	normalized = audioPattern.ReplaceAllString(normalized, "")
+
+	// Remove HDR/color space indicators (HDR, HDR10, DV, DoVi, SDR, etc.)
+	hdrPattern := regexp.MustCompile(`(?i)\b(HDR10\+?|HDR|DV|DOVI|SDR|10BIT)\b`)
+	normalized = hdrPattern.ReplaceAllString(normalized, "")
+
+	// Remove hybrid/repack/proper indicators
+	flagPattern := regexp.MustCompile(`(?i)\b(HYBRID|REPACK|PROPER|RERIP)\b`)
+	normalized = flagPattern.ReplaceAllString(normalized, "")
+
+	// Remove group tags (everything after the last dash)
+	dashIndex := strings.LastIndex(normalized, "-")
+	if dashIndex > 0 {
+		normalized = normalized[:dashIndex]
+	}
+
+	// Collapse multiple dots/spaces into single dot
+	normalized = regexp.MustCompile(`[.\s]+`).ReplaceAllString(normalized, ".")
+
+	// Trim leading/trailing dots
+	normalized = strings.Trim(normalized, ".")
+
+	return normalized
+}
+
 func (s *DownloadService) isInQueue(title string, queue []ports.DownloadQueueItem) bool {
+	normalizedTitle := normalizeReleaseTitle(title)
+
 	for _, item := range queue {
-		if strings.Contains(item.Title, title) || strings.Contains(title, item.Title) {
+		normalizedItem := normalizeReleaseTitle(item.Title)
+		if normalizedTitle == normalizedItem {
 			return true
 		}
 	}
