@@ -152,22 +152,21 @@ func normalizeCodec(codec string) string {
 // IsSeasonPack checks if a title represents a season pack
 func IsSeasonPack(title string) bool {
 	titleUpper := strings.ToUpper(title)
-	
-	// Must have season notation
-	hasSeason := strings.Contains(titleUpper, "SEASON") ||
-		regexp.MustCompile(`S\d{1,2}[^E]`).MatchString(titleUpper)
-	
-	// Must NOT have episode notation
-	hasEpisode := strings.Contains(titleUpper, "E0") ||
-		strings.Contains(titleUpper, "E1") ||
-		strings.Contains(titleUpper, "E2") ||
-		strings.Contains(titleUpper, "E3") ||
-		strings.Contains(titleUpper, "X0") ||
-		strings.Contains(titleUpper, "X1") ||
-		strings.Contains(titleUpper, "X2") ||
-		strings.Contains(titleUpper, "X3")
-	
-	return hasSeason && !hasEpisode
+
+	// Must have season notation (S01, S1, Season 1, etc.)
+	seasonPattern := regexp.MustCompile(`(?i)(SEASON[\s\.]?\d{1,2}|S\d{1,2})`)
+	hasSeason := seasonPattern.MatchString(titleUpper)
+
+	if !hasSeason {
+		return false
+	}
+
+	// Must NOT have episode notation using word boundaries to avoid false matches
+	// This matches: E01, E1, 1x01, etc. but NOT: NERO, REMASTERED, STEREO
+	episodePattern := regexp.MustCompile(`(?i)\b(E\d{1,2}|EP?\d{1,2}|\d{1,2}[xX]\d{1,2})\b`)
+	hasEpisode := episodePattern.MatchString(titleUpper)
+
+	return !hasEpisode
 }
 
 func isNumeric(s string) bool {

@@ -135,6 +135,7 @@ func (s *NZBService) ValidateAndScore(ctx context.Context, media *domain.Media, 
 			ParsedYear:      parsed.Year,
 			ParsedSeason:    parsed.Season,
 			ParsedEpisode:   parsed.Episode,
+			IsSeasonPack:    parser.IsSeasonPack(result.Title),
 			Resolution:      parsed.Resolution,
 			Source:          parsed.Source,
 			Codec:           parsed.Codec,
@@ -187,7 +188,7 @@ func (s *NZBService) ValidateAndScore(ctx context.Context, media *domain.Media, 
 			Msg("Accepted NZB result")
 
 		// For season packs, check if we already have one stored for this show/season
-		if nzb.IsSeasonPack() && nzb.IMDB != "" {
+		if nzb.IsSeasonPack && nzb.IMDB != "" {
 			existing, err := s.repo.FindSeasonPackByIMDB(ctx, nzb.IMDB, nzb.ParsedSeason)
 			if err == nil && existing != nil {
 				log.Debug().
@@ -211,7 +212,7 @@ func (s *NZBService) ValidateAndScore(ctx context.Context, media *domain.Media, 
 	if count == 0 && bestCandidate != nil {
 		// Check for duplicate season pack before storing fallback
 		shouldStore := true
-		if bestCandidate.IsSeasonPack() && bestCandidate.IMDB != "" {
+		if bestCandidate.IsSeasonPack && bestCandidate.IMDB != "" {
 			existing, err := s.repo.FindSeasonPackByIMDB(ctx, bestCandidate.IMDB, bestCandidate.ParsedSeason)
 			if err == nil && existing != nil {
 				log.Debug().

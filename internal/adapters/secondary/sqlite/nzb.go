@@ -82,6 +82,20 @@ func (r *NZBRepository) FindSeasonPackByIMDB(ctx context.Context, imdb string, s
 	return &nzb, nil
 }
 
+func (r *NZBRepository) FindBestSeasonPack(ctx context.Context, imdb string, season int64) (*domain.NZB, error) {
+	var nzb domain.NZB
+	if err := r.db.WithContext(ctx).
+		Where("imdb = ? AND parsed_season = ? AND is_season_pack = ? AND failed = ?", imdb, season, true, false).
+		Order("total_score DESC").
+		First(&nzb).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return &nzb, nil
+}
+
 func (r *NZBRepository) MarkAsFailedByTitle(ctx context.Context, title string) error {
 	if err := r.db.WithContext(ctx).
 		Model(&domain.NZB{}).

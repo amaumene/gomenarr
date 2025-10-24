@@ -99,11 +99,30 @@ func (s *DownloadService) DownloadMedia(ctx context.Context) error {
 					seasonMutex.Unlock()
 				}
 
-				// Get best NZB
-				nzb, err := s.nzbRepo.FindBestByTraktID(ctx, media.TraktID)
-				if err != nil {
-					log.Debug().Int64("trakt_id", media.TraktID).Int("worker_id", workerID).Msg("No NZB found for media")
-					continue
+				// Get best NZB - prefer season packs for episodes
+				var nzb *domain.NZB
+				var err error
+
+				if media.IsEpisode() && media.IMDB != "" {
+					// Try to find season pack first
+					nzb, err = s.nzbRepo.FindBestSeasonPack(ctx, media.IMDB, media.Season)
+					if err == nil {
+						log.Debug().
+							Str("imdb", media.IMDB).
+							Int64("season", media.Season).
+							Str("title", nzb.Title).
+							Int("worker_id", workerID).
+							Msg("Found season pack for episode")
+					}
+				}
+
+				// Fallback to episode-specific NZB if no season pack found
+				if nzb == nil {
+					nzb, err = s.nzbRepo.FindBestByTraktID(ctx, media.TraktID)
+					if err != nil {
+						log.Debug().Int64("trakt_id", media.TraktID).Int("worker_id", workerID).Msg("No NZB found for media")
+						continue
+					}
 				}
 
 				// Check if already in queue
@@ -125,7 +144,7 @@ func (s *DownloadService) DownloadMedia(ctx context.Context) error {
 				}
 
 				// Mark season as processed if it's a season pack (with mutex)
-				if media.IsEpisode() && nzb.IsSeasonPack() {
+				if media.IsEpisode() && nzb.IsSeasonPack {
 					seasonKey := fmt.Sprintf("%s_S%d", media.IMDB, media.Season)
 					seasonMutex.Lock()
 					processedSeasons[seasonKey] = true

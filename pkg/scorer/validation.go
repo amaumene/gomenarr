@@ -29,6 +29,10 @@ func ValidationScore(media MediaInfo, parsed *parser.ParsedInfo) int {
 	if media.IsEpisode() {
 		if parsed.Season == media.Season {
 			score += 10
+			// Season packs (Episode == 0) get full season/episode points
+			if parsed.Episode == 0 {
+				score += 10
+			}
 		}
 		if parsed.Episode == media.Number {
 			score += 10
