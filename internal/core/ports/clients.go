@@ -65,7 +65,9 @@ type TraktClient interface {
 	GetWatchHistory(ctx context.Context, days int) ([]TraktHistoryItem, error)
 
 	// IsWatched checks if a media item is in the watched history
-	IsWatched(ctx context.Context, traktID int64, mediaType string) (bool, error)
+	// For movies: pass traktID with mediaType="movie"
+	// For episodes: pass traktID with mediaType="episode", imdb, season, and episode
+	IsWatched(ctx context.Context, traktID int64, mediaType string, imdb string, season, episode int64) (bool, error)
 	// ClearWatchedCache clears the watched cache
 	ClearWatchedCache()
 }
@@ -111,4 +113,7 @@ type DownloadClient interface {
 	
 	// DeleteFromHistory removes an item from history
 	DeleteFromHistory(ctx context.Context, downloadID int64) error
+
+	// CancelDownload cancels/removes an item from the download queue
+	CancelDownload(ctx context.Context, downloadID int64) error
 }

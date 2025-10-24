@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/amaumene/gomenarr/internal/core/domain"
@@ -12,16 +13,29 @@ import (
 )
 
 type MediaService struct {
-	repo        ports.MediaRepository
-	traktClient ports.TraktClient
-	cfg         config.TraktConfig
+	repo           ports.MediaRepository
+	nzbRepo        ports.NZBRepository
+	traktClient    ports.TraktClient
+	downloadClient ports.DownloadClient
+	traktCfg       config.TraktConfig
+	downloadCfg    config.DownloadConfig
 }
 
-func NewMediaService(repo ports.MediaRepository, traktClient ports.TraktClient, cfg config.TraktConfig) *MediaService {
+func NewMediaService(
+	repo ports.MediaRepository,
+	nzbRepo ports.NZBRepository,
+	traktClient ports.TraktClient,
+	downloadClient ports.DownloadClient,
+	traktCfg config.TraktConfig,
+	downloadCfg config.DownloadConfig,
+) *MediaService {
 	return &MediaService{
-		repo:        repo,
-		traktClient: traktClient,
-		cfg:         cfg,
+		repo:           repo,
+		nzbRepo:        nzbRepo,
+		traktClient:    traktClient,
+		downloadClient: downloadClient,
+		traktCfg:       traktCfg,
+		downloadCfg:    downloadCfg,
 	}
 }
 
@@ -56,8 +70,8 @@ func (s *MediaService) SyncMovies(ctx context.Context) error {
 	// Upsert to database (skip watched content)
 	count := 0
 	for _, movie := range movieMap {
-		// Check if movie is watched
-		watched, err := s.traktClient.IsWatched(ctx, movie.TraktID, "movie")
+		// Check if movie is watched (movies use Trakt ID, pass empty IMDB and 0 for season/episode)
+		watched, err := s.traktClient.IsWatched(ctx, movie.TraktID, "movie", "", 0, 0)
 		if err != nil {
 			log.Warn().Err(err).Int64("movie_id", movie.TraktID).Msg("Failed to check watched status, skipping movie")
 			continue
@@ -88,6 +102,13 @@ func (s *MediaService) SyncMovies(ctx context.Context) error {
 	}
 
 	log.Info().Int("count", count).Msg("Synced movies from Trakt")
+
+	// Cleanup orphaned movies (in DB but no longer in Trakt lists)
+	if err := s.cleanupOrphanedMovies(ctx, movieMap); err != nil {
+		log.Error().Err(err).Msg("Failed to cleanup orphaned movies")
+		// Don't return error, just log it
+	}
+
 	return nil
 }
 
@@ -141,12 +162,15 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 
 				// Upsert each episode (skip watched content)
 				for _, ep := range episodes {
-					// Check if episode is watched
-					watched, err := s.traktClient.IsWatched(ctx, ep.TraktID, "episode")
+					// Check if episode is watched (using IMDB, season, episode composite key)
+					watched, err := s.traktClient.IsWatched(ctx, ep.TraktID, "episode", ep.ShowIMDB, ep.Season, ep.Number)
 					if err != nil {
 						log.Warn().
 							Err(err).
 							Int64("episode_id", ep.TraktID).
+							Str("show_imdb", ep.ShowIMDB).
+							Int64("season", ep.Season).
+							Int64("episode", ep.Number).
 							Int("worker_id", workerID).
 							Msg("Failed to check watched status, skipping episode")
 						continue
@@ -156,6 +180,9 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 						log.Debug().
 							Int64("episode_id", ep.TraktID).
 							Str("title", ep.Title).
+							Str("show_imdb", ep.ShowIMDB).
+							Int64("season", ep.Season).
+							Int64("episode", ep.Number).
 							Int("worker_id", workerID).
 							Msg("Skipping watched episode")
 						continue
@@ -177,11 +204,11 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 		}(i)
 	}
 
-	// Queue watchlist shows (1 episode each)
+	// Queue watchlist shows (3 episodes each)
 	for _, show := range watchlistShows {
 		jobs <- showJob{
 			show:         show,
-			episodeLimit: 1,
+			episodeLimit: 3,
 			showType:     "watchlist",
 		}
 	}
@@ -190,7 +217,7 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 	for _, show := range favoriteShows {
 		jobs <- showJob{
 			show:         show,
-			episodeLimit: s.cfg.FavoritesEpisodeLimit,
+			episodeLimit: s.traktCfg.FavoritesEpisodeLimit,
 			showType:     "favorite",
 		}
 	}
@@ -201,6 +228,14 @@ func (s *MediaService) SyncEpisodes(ctx context.Context) error {
 	wg.Wait()
 
 	log.Info().Int("count", count).Msg("Synced episodes from Trakt")
+
+	// Cleanup orphaned episodes (shows no longer in Trakt lists)
+	allShows := append(watchlistShows, favoriteShows...)
+	if err := s.cleanupOrphanedEpisodes(ctx, allShows); err != nil {
+		log.Error().Err(err).Msg("Failed to cleanup orphaned episodes")
+		// Don't return error, just log it
+	}
+
 	return nil
 }
 
@@ -274,4 +309,204 @@ func (s *MediaService) GetByTraktID(ctx context.Context, traktID int64) (*domain
 
 func (s *MediaService) Update(ctx context.Context, media *domain.Media) error {
 	return s.repo.Update(ctx, media)
+}
+
+func (s *MediaService) cleanupOrphanedMovies(ctx context.Context, traktMovies map[int64]ports.TraktMovie) error {
+	// Get all media from DB
+	allMedia, err := s.repo.FindAll(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get all media: %w", err)
+	}
+
+	// Find orphaned movies (in DB but not in Trakt lists and not watched)
+	orphanedIDs := make([]int64, 0)
+	orphanedMedia := make([]*domain.Media, 0)
+	for _, media := range allMedia {
+		if !media.IsMovie() {
+			continue // Skip episodes
+		}
+
+		// Check if movie is still in Trakt lists
+		if _, exists := traktMovies[media.TraktID]; !exists {
+			orphanedIDs = append(orphanedIDs, media.TraktID)
+			orphanedMedia = append(orphanedMedia, media)
+		}
+	}
+
+	if len(orphanedIDs) == 0 {
+		log.Debug().Msg("No orphaned movies to cleanup")
+		return nil
+	}
+
+	log.Info().
+		Int("count", len(orphanedIDs)).
+		Msg("Found orphaned movies removed from Trakt lists")
+
+	// Cancel active downloads in NZBGet queue
+	canceledCount := 0
+	for _, media := range orphanedMedia {
+		if media.DownloadID > 0 {
+			if err := s.downloadClient.CancelDownload(ctx, media.DownloadID); err != nil {
+				log.Warn().
+					Err(err).
+					Int64("download_id", media.DownloadID).
+					Int64("trakt_id", media.TraktID).
+					Msg("Failed to cancel download, continuing cleanup")
+			} else {
+				canceledCount++
+				log.Debug().
+					Int64("download_id", media.DownloadID).
+					Int64("trakt_id", media.TraktID).
+					Msg("Canceled download in NZBGet")
+			}
+		}
+	}
+	if canceledCount > 0 {
+		log.Info().Int("count", canceledCount).Msg("Canceled active downloads")
+	}
+
+	// Delete files from disk if configured
+	if s.downloadCfg.DeleteFiles {
+		deletedFiles := 0
+		for _, media := range orphanedMedia {
+			if media.Path != "" {
+				if err := os.RemoveAll(media.Path); err != nil {
+					log.Error().
+						Err(err).
+						Str("path", media.Path).
+						Int64("trakt_id", media.TraktID).
+						Msg("Failed to delete directory")
+				} else {
+					deletedFiles++
+					log.Info().
+						Str("path", media.Path).
+						Int64("trakt_id", media.TraktID).
+						Msg("Deleted directory and all contents")
+				}
+			}
+		}
+		if deletedFiles > 0 {
+			log.Info().Int("count", deletedFiles).Msg("Deleted orphaned files from disk")
+		}
+	}
+
+	// Delete NZB records from database
+	if err := s.nzbRepo.DeleteByTraktIDs(ctx, orphanedIDs); err != nil {
+		log.Error().Err(err).Msg("Failed to delete orphaned NZB records")
+		// Don't fail, continue with media deletion
+	} else {
+		log.Debug().Int("count", len(orphanedIDs)).Msg("Deleted orphaned NZB records")
+	}
+
+	// Delete orphaned media from database
+	if err := s.repo.DeleteByTraktIDs(ctx, orphanedIDs); err != nil {
+		return fmt.Errorf("failed to delete orphaned movies: %w", err)
+	}
+
+	log.Info().Int("count", len(orphanedIDs)).Msg("Completed cleanup of orphaned movies")
+	return nil
+}
+
+func (s *MediaService) cleanupOrphanedEpisodes(ctx context.Context, traktShows []ports.TraktShow) error {
+	// Build set of show IMDB IDs that are in Trakt lists
+	showIMDBs := make(map[string]bool)
+	for _, show := range traktShows {
+		if show.IMDB != "" {
+			showIMDBs[show.IMDB] = true
+		}
+	}
+
+	// Get all media from DB
+	allMedia, err := s.repo.FindAll(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get all media: %w", err)
+	}
+
+	// Find orphaned episodes (show no longer in Trakt lists)
+	orphanedIDs := make([]int64, 0)
+	orphanedMedia := make([]*domain.Media, 0)
+	for _, media := range allMedia {
+		if !media.IsEpisode() {
+			continue // Skip movies
+		}
+
+		// Check if the show is still in Trakt lists (by IMDB)
+		if !showIMDBs[media.IMDB] {
+			orphanedIDs = append(orphanedIDs, media.TraktID)
+			orphanedMedia = append(orphanedMedia, media)
+		}
+	}
+
+	if len(orphanedIDs) == 0 {
+		log.Debug().Msg("No orphaned episodes to cleanup")
+		return nil
+	}
+
+	log.Info().
+		Int("count", len(orphanedIDs)).
+		Msg("Found orphaned episodes (shows removed from Trakt lists)")
+
+	// Cancel active downloads in NZBGet queue
+	canceledCount := 0
+	for _, media := range orphanedMedia {
+		if media.DownloadID > 0 {
+			if err := s.downloadClient.CancelDownload(ctx, media.DownloadID); err != nil {
+				log.Warn().
+					Err(err).
+					Int64("download_id", media.DownloadID).
+					Int64("trakt_id", media.TraktID).
+					Msg("Failed to cancel download, continuing cleanup")
+			} else {
+				canceledCount++
+				log.Debug().
+					Int64("download_id", media.DownloadID).
+					Int64("trakt_id", media.TraktID).
+					Msg("Canceled download in NZBGet")
+			}
+		}
+	}
+	if canceledCount > 0 {
+		log.Info().Int("count", canceledCount).Msg("Canceled active downloads")
+	}
+
+	// Delete files from disk if configured
+	if s.downloadCfg.DeleteFiles {
+		deletedFiles := 0
+		for _, media := range orphanedMedia {
+			if media.Path != "" {
+				if err := os.RemoveAll(media.Path); err != nil {
+					log.Error().
+						Err(err).
+						Str("path", media.Path).
+						Int64("trakt_id", media.TraktID).
+						Msg("Failed to delete directory")
+				} else {
+					deletedFiles++
+					log.Info().
+						Str("path", media.Path).
+						Int64("trakt_id", media.TraktID).
+						Msg("Deleted directory and all contents")
+				}
+			}
+		}
+		if deletedFiles > 0 {
+			log.Info().Int("count", deletedFiles).Msg("Deleted orphaned files from disk")
+		}
+	}
+
+	// Delete NZB records from database
+	if err := s.nzbRepo.DeleteByTraktIDs(ctx, orphanedIDs); err != nil {
+		log.Error().Err(err).Msg("Failed to delete orphaned NZB records")
+		// Don't fail, continue with media deletion
+	} else {
+		log.Debug().Int("count", len(orphanedIDs)).Msg("Deleted orphaned NZB records")
+	}
+
+	// Delete orphaned media from database
+	if err := s.repo.DeleteByTraktIDs(ctx, orphanedIDs); err != nil {
+		return fmt.Errorf("failed to delete orphaned episodes: %w", err)
+	}
+
+	log.Info().Int("count", len(orphanedIDs)).Msg("Completed cleanup of orphaned episodes")
+	return nil
 }

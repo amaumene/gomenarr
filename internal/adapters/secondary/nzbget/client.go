@@ -201,6 +201,36 @@ func (c *Client) DeleteFromHistory(ctx context.Context, downloadID int64) error 
 	return nil
 }
 
+func (c *Client) CancelDownload(ctx context.Context, downloadID int64) error {
+	request := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "editqueue",
+		"params":  []interface{}{"GroupDelete", "", []int64{downloadID}},
+		"id":      1,
+	}
+
+	var response struct {
+		Result bool `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := c.rpc(ctx, request, &response); err != nil {
+		return err
+	}
+
+	if response.Error != nil {
+		return fmt.Errorf("nzbget error: %s", response.Error.Message)
+	}
+
+	if !response.Result {
+		return fmt.Errorf("failed to cancel download")
+	}
+
+	return nil
+}
+
 func (c *Client) rpc(ctx context.Context, request interface{}, response interface{}) error {
 	data, err := json.Marshal(request)
 	if err != nil {

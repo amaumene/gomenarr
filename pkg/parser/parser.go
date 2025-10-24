@@ -161,9 +161,10 @@ func IsSeasonPack(title string) bool {
 		return false
 	}
 
-	// Must NOT have episode notation using word boundaries to avoid false matches
-	// This matches: E01, E1, 1x01, etc. but NOT: NERO, REMASTERED, STEREO
-	episodePattern := regexp.MustCompile(`(?i)\b(E\d{1,2}|EP?\d{1,2}|\d{1,2}[xX]\d{1,2})\b`)
+	// Must NOT have episode notation
+	// This matches: S01E01, S1E1, 1x01, etc. (direct episode indicators)
+	// Uses S\d+E\d+ pattern to catch the common SxxExx format without word boundaries
+	episodePattern := regexp.MustCompile(`(?i)(S\d{1,2}E\d{1,2}|EP?\d{1,2}|\d{1,2}[xX]\d{1,2})`)
 	hasEpisode := episodePattern.MatchString(titleUpper)
 
 	return !hasEpisode
