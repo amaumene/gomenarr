@@ -24,6 +24,8 @@ WORKDIR /root/
 # Copy binary from builder
 COPY --from=builder /app/gomenarr .
 
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
 # Create volume for config
 VOLUME ["/config"]
 
